@@ -1,0 +1,463 @@
+"""
+tests/test_migration.py
+
+Unit tests for shopify_parser and shopify_client normalization logic.
+Migration_utils is not tested here because it requires live Descope credentials;
+use a dedicated integration test environment for that.
+
+Run with:
+  python3 -m unittest tests.test_migration
+"""
+
+import csv
+import io
+import sys
+import os
+import unittest
+from unittest.mock import MagicMock, patch
+
+# Allow imports from src/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+import shopify_parser
+from shopify_client import _normalize_customer
+from migration_utils import _placeholder_login_id, _PLACEHOLDER_DOMAIN
+
+
+# ── shopify_parser tests ──────────────────────────────────────────────────────
+
+class TestParseCustomers(unittest.TestCase):
+
+    def _write_csv(self, rows: list[dict], path: str) -> None:
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _csv_path(self, name="customers.csv"):
+        return os.path.join(self.tmpdir, name)
+
+    def test_basic_customer_parsed(self):
+        path = self._csv_path()
+        self._write_csv([{
+            "Customer ID": "123",
+            "First Name": "Alice",
+            "Last Name": "Smith",
+            "Email": "alice@example.com",
+            "Phone": "+15551234567",
+            "Total Spent": "99.99",
+            "Total Orders": "3",
+            "Tags": "vip",
+            "Note": "Good customer",
+        }], path)
+        result = shopify_parser.parse_customers([path])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["email"], "alice@example.com")
+        self.assertEqual(result[0]["phone"], "+15551234567")
+        self.assertEqual(result[0]["given_name"], "Alice")
+        self.assertEqual(result[0]["shopify_customer_id"], "123")
+        self.assertEqual(result[0]["total_spent"], "99.99")
+        self.assertEqual(result[0]["tags"], "vip")
+
+    def test_customer_without_phone(self):
+        path = self._csv_path()
+        self._write_csv([{
+            "Customer ID": "456",
+            "First Name": "Bob",
+            "Last Name": "",
+            "Email": "bob@example.com",
+            "Phone": "",
+            "Total Spent": "0.00",
+            "Total Orders": "0",
+            "Tags": "",
+            "Note": "",
+        }], path)
+        result = shopify_parser.parse_customers([path])
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0]["phone"])
+        self.assertIsNone(result[0]["family_name"])
+
+    def test_customer_without_email_or_phone_kept(self):
+        """Customers with no contact info are kept — migration_utils assigns a placeholder."""
+        path = self._csv_path()
+        self._write_csv([{
+            "Customer ID": "789",
+            "First Name": "Ghost",
+            "Last Name": "User",
+            "Email": "",
+            "Phone": "",
+            "Total Spent": "0.00",
+            "Total Orders": "0",
+            "Tags": "",
+            "Note": "",
+        }], path)
+        result = shopify_parser.parse_customers([path])
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0]["email"])
+        self.assertIsNone(result[0]["phone"])
+        self.assertEqual(result[0]["shopify_customer_id"], "789")
+
+    def test_deduplication_across_files(self):
+        row = {
+            "Customer ID": "111",
+            "First Name": "Carol",
+            "Last Name": "Jones",
+            "Email": "carol@example.com",
+            "Phone": "",
+            "Total Spent": "0.00",
+            "Total Orders": "0",
+            "Tags": "",
+            "Note": "",
+        }
+        path1 = self._csv_path("c1.csv")
+        path2 = self._csv_path("c2.csv")
+        self._write_csv([row], path1)
+        self._write_csv([row], path2)
+        result = shopify_parser.parse_customers([path1, path2])
+        self.assertEqual(len(result), 1)
+
+    def test_multiple_files_combined(self):
+        row1 = {
+            "Customer ID": "1", "First Name": "A", "Last Name": "",
+            "Email": "a@example.com", "Phone": "", "Total Spent": "0",
+            "Total Orders": "0", "Tags": "", "Note": "",
+        }
+        row2 = {
+            "Customer ID": "2", "First Name": "B", "Last Name": "",
+            "Email": "b@example.com", "Phone": "", "Total Spent": "0",
+            "Total Orders": "0", "Tags": "", "Note": "",
+        }
+        path1 = self._csv_path("c1.csv")
+        path2 = self._csv_path("c2.csv")
+        self._write_csv([row1], path1)
+        self._write_csv([row2], path2)
+        result = shopify_parser.parse_customers([path1, path2])
+        self.assertEqual(len(result), 2)
+
+
+class TestParseStaffUsers(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmpdir, "users.csv")
+
+    def _write_csv(self, rows):
+        with open(self.path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def _row(self, **kwargs):
+        base = {
+            "id": "1",
+            "user_type": "Admin",
+            "email": "user@example.com",
+            "phone": "",
+            "given_name": "Test",
+            "family_name": "User",
+            "created_at": "2026-01-01T00:00:00Z",
+            "status": "Active",
+            "tfa_enforced": "false",
+            "role_name": "Store owner",
+            "role_category": "Store",
+            "group_name": "",
+            "store_name": "My Store",
+            "pos_location_name": "",
+            "all_current_and_future_locations": "",
+            "added_at": "2026-01-01T00:00:00Z",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_basic_staff_user(self):
+        self._write_csv([self._row()])
+        result = shopify_parser.parse_staff_users(self.path)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["email"], "user@example.com")
+        self.assertEqual(result[0]["roles"], ["Store owner"])
+        self.assertEqual(result[0]["status"], "Active")
+
+    def test_multi_role_user_collapsed(self):
+        """A user appearing twice (one per role) should produce one record with both roles."""
+        self._write_csv([
+            self._row(email="cashier@test.com", role_name="Cashier"),
+            self._row(email="cashier@test.com", role_name="Store manager"),
+        ])
+        result = shopify_parser.parse_staff_users(self.path)
+        self.assertEqual(len(result), 1)
+        self.assertIn("Cashier", result[0]["roles"])
+        self.assertIn("Store manager", result[0]["roles"])
+
+    def test_no_phone_becomes_none(self):
+        self._write_csv([self._row(phone="")])
+        result = shopify_parser.parse_staff_users(self.path)
+        self.assertIsNone(result[0]["phone"])
+
+    def test_row_without_email_kept(self):
+        """Staff with no email are kept — migration_utils assigns a placeholder login ID."""
+        self._write_csv([self._row(email="")])
+        result = shopify_parser.parse_staff_users(self.path)
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0]["email"])
+
+
+class TestParseRoles(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmpdir, "roles.csv")
+
+    def _write_csv(self, rows):
+        with open(self.path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def _row(self, name, permission, category="Store"):
+        return {
+            "name": name,
+            "category": category,
+            "created_at": "2026-01-01T00:00:00Z",
+            "permission": permission,
+            "pos_manager_approval": "",
+            "added_at": "2026-01-01T00:00:00Z",
+        }
+
+    def test_permissions_aggregated_per_role(self):
+        self._write_csv([
+            self._row("Cashier", "Register - Open drawer"),
+            self._row("Cashier", "Register - Start and end payment tracking sessions"),
+        ])
+        result = shopify_parser.parse_roles(self.path)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "Cashier")
+        self.assertEqual(len(result[0]["permissions"]), 2)
+
+    def test_multiple_roles(self):
+        self._write_csv([
+            self._row("Cashier", "Register - Open drawer"),
+            self._row("Merchandiser", "Products - View"),
+        ])
+        result = shopify_parser.parse_roles(self.path)
+        self.assertEqual(len(result), 2)
+        names = {r["name"] for r in result}
+        self.assertIn("Cashier", names)
+        self.assertIn("Merchandiser", names)
+
+    def test_duplicate_permissions_deduplicated(self):
+        self._write_csv([
+            self._row("Cashier", "Register - Open drawer"),
+            self._row("Cashier", "Register - Open drawer"),
+        ])
+        result = shopify_parser.parse_roles(self.path)
+        self.assertEqual(len(result[0]["permissions"]), 1)
+
+
+# ── shopify_client normalization tests ────────────────────────────────────────
+
+class TestNormalizeCustomer(unittest.TestCase):
+
+    def _node(self, **kwargs):
+        base = {
+            "id": "gid://shopify/Customer/12345",
+            "firstName": "Alice",
+            "lastName": "Smith",
+            "defaultEmailAddress": {"emailAddress": "alice@example.com"},
+            "defaultPhoneNumber": {"phoneNumber": "+15551234567"},
+            "numberOfOrders": "3",
+            "amountSpent": {"amount": "99.99", "currencyCode": "USD"},
+            "tags": ["vip", "loyal"],
+            "note": "Good customer",
+            "state": "ENABLED",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_gid_stripped(self):
+        result = _normalize_customer(self._node())
+        self.assertEqual(result["shopify_customer_id"], "12345")
+
+    def test_email_and_phone_extracted(self):
+        result = _normalize_customer(self._node())
+        self.assertEqual(result["email"], "alice@example.com")
+        self.assertEqual(result["phone"], "+15551234567")
+
+    def test_tags_list_joined(self):
+        result = _normalize_customer(self._node())
+        self.assertEqual(result["tags"], "vip, loyal")
+
+    def test_no_phone_returns_none(self):
+        result = _normalize_customer(self._node(defaultPhoneNumber=None))
+        self.assertIsNone(result["phone"])
+
+    def test_no_email_returns_none(self):
+        result = _normalize_customer(self._node(defaultEmailAddress=None))
+        self.assertIsNone(result["email"])
+
+    def test_amounts_stringified(self):
+        result = _normalize_customer(self._node())
+        self.assertEqual(result["total_spent"], "99.99")
+        self.assertEqual(result["total_orders"], "3")
+
+
+# ── placeholder login ID tests ────────────────────────────────────────────────
+
+class TestPlaceholderLoginId(unittest.TestCase):
+
+    def test_staff_format(self):
+        result = _placeholder_login_id("staff", "266163274")
+        self.assertEqual(result, f"shopify-staff-266163274@{_PLACEHOLDER_DOMAIN}")
+
+    def test_customer_format(self):
+        result = _placeholder_login_id("customer", "12345")
+        self.assertEqual(result, f"shopify-customer-12345@{_PLACEHOLDER_DOMAIN}")
+
+    def test_uses_reserved_tld(self):
+        """Placeholder domain must use .invalid (IANA-reserved, can never be real)."""
+        result = _placeholder_login_id("staff", "123")
+        self.assertTrue(result.endswith(".invalid"))
+
+    def test_different_ids_produce_different_login_ids(self):
+        self.assertNotEqual(
+            _placeholder_login_id("staff", "111"),
+            _placeholder_login_id("staff", "222"),
+        )
+
+
+class TestParseStaffUsersNoContact(unittest.TestCase):
+    """
+    Staff members with no email and no phone should still be parsed correctly
+    by shopify_parser — the placeholder logic lives in migration_utils.
+    The parser must NOT drop them.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmpdir, "users.csv")
+
+    def _write_csv(self, rows):
+        with open(self.path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def _row(self, **kwargs):
+        base = {
+            "id": "999",
+            "user_type": "Admin",
+            "email": "",
+            "phone": "",
+            "given_name": "Jane",
+            "family_name": "Doe",
+            "created_at": "2026-01-01T00:00:00Z",
+            "status": "Active",
+            "tfa_enforced": "false",
+            "role_name": "Store owner",
+            "role_category": "Store",
+            "group_name": "",
+            "store_name": "My Store",
+            "pos_location_name": "",
+            "all_current_and_future_locations": "",
+            "added_at": "2026-01-01T00:00:00Z",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_no_contact_staff_is_parsed(self):
+        """Parser should keep staff with no email/phone — not silently drop them."""
+        self._write_csv([self._row()])
+        result = shopify_parser.parse_staff_users(self.path)
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0]["email"])
+        self.assertIsNone(result[0]["phone"])
+        self.assertEqual(result[0]["given_name"], "Jane")
+        self.assertEqual(result[0]["shopify_user_id"], "999")
+
+    def test_no_contact_staff_mixed_with_normal(self):
+        """Both no-contact and normal staff should be returned."""
+        self._write_csv([
+            self._row(id="1", email="", phone=""),
+            self._row(id="2", email="real@example.com", phone=""),
+        ])
+        result = shopify_parser.parse_staff_users(self.path)
+        self.assertEqual(len(result), 2)
+        emails = {u["email"] for u in result}
+        self.assertIn(None, emails)
+        self.assertIn("real@example.com", emails)
+
+
+class TestParseCustomersNoContact(unittest.TestCase):
+    """
+    Customers with no email and no phone should still be parsed by shopify_parser
+    — the placeholder login ID logic lives in migration_utils.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _csv_path(self, name="customers.csv"):
+        return os.path.join(self.tmpdir, name)
+
+    def _write_csv(self, rows, path):
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def _row(self, **kwargs):
+        base = {
+            "Customer ID": "999",
+            "First Name": "Ghost",
+            "Last Name": "User",
+            "Email": "",
+            "Phone": "",
+            "Total Spent": "0.00",
+            "Total Orders": "0",
+            "Tags": "",
+            "Note": "",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_no_contact_customer_is_parsed(self):
+        path = self._csv_path()
+        self._write_csv([self._row()], path)
+        result = shopify_parser.parse_customers([path])
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0]["email"])
+        self.assertIsNone(result[0]["phone"])
+        self.assertEqual(result[0]["shopify_customer_id"], "999")
+        self.assertEqual(result[0]["given_name"], "Ghost")
+
+    def test_no_contact_customer_mixed_with_normal(self):
+        path = self._csv_path()
+        self._write_csv([
+            self._row(**{"Customer ID": "1", "Email": "", "Phone": ""}),
+            self._row(**{"Customer ID": "2", "Email": "real@example.com", "Phone": ""}),
+        ], path)
+        result = shopify_parser.parse_customers([path])
+        self.assertEqual(len(result), 2)
+        emails = {c["email"] for c in result}
+        self.assertIn(None, emails)
+        self.assertIn("real@example.com", emails)
+
+    def test_no_contact_customers_deduplicated_by_id(self):
+        """Two no-contact customers in separate files with the same ID should deduplicate."""
+        path1 = self._csv_path("c1.csv")
+        path2 = self._csv_path("c2.csv")
+        self._write_csv([self._row(**{"Customer ID": "42"})], path1)
+        self._write_csv([self._row(**{"Customer ID": "42"})], path2)
+        result = shopify_parser.parse_customers([path1, path2])
+        self.assertEqual(len(result), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
