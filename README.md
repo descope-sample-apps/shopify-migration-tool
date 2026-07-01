@@ -91,8 +91,18 @@ SHOPIFY_ACCESS_TOKEN=shpat_...
 - Management Key: [app.descope.com/settings/company/managementkeys](https://app.descope.com/settings/company/managementkeys)
 
 **Getting Shopify credentials (customer migration API mode only):**
-- Shop URL: your store's `.myshopify.com` domain
-- Access Token: Create an Admin API token at `https://{your-store}.myshopify.com/admin/settings/apps/development` with the `read_customers` scope
+
+`SHOPIFY_SHOP_URL` is your store's `.myshopify.com` domain (no `https://`).
+
+For the access token, there are two options:
+
+**Option 1 — static token** (if you already have one): set `SHOPIFY_ACCESS_TOKEN` directly in `.env`. The script uses it as-is.
+
+**Option 2 — OAuth flow** (recommended): the script can obtain a token automatically by opening your browser.
+1. Create an app in the [Shopify Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard) with the `read_customers` scope
+2. In your app's configuration, add `http://localhost:3000/callback` as an allowed redirect URI (change `3000` if you set `SHOPIFY_OAUTH_PORT`)
+3. Copy the **Client ID** and **Client secret** from the app's settings page into `.env` as `SHOPIFY_CLIENT_ID` and `SHOPIFY_CLIENT_SECRET`, and leave `SHOPIFY_ACCESS_TOKEN` blank
+4. Run the script with `--from-api` — it will open your browser, complete the OAuth flow, and save the token to `.env` automatically for future runs
 
 ### 5. Export your Shopify data
 ##### **Note:** Shopify role and user exports put the CSV file in a ZIP archive, so make sure to unzip it before running this script

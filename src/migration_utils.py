@@ -611,7 +611,7 @@ def process_customers(
             # Merge: update custom attributes on existing user, add Customer role
             existing = existing_users[0]
             existing_login_id = existing["loginIds"][0]
-            existing_attrs = existing.get("customAttributes", {})
+            existing_attrs = existing.get("customAttributes") or {}
 
             # Staff takes precedence for shopify_source; add customer attrs
             merged_attrs = {**existing_attrs}
