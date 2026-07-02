@@ -77,13 +77,34 @@ cp .env.example .env
 ```
 
 ```env
-# Always required
-DESCOPE_PROJECT_ID=...
-DESCOPE_MANAGEMENT_KEY=...
+# Descope credentials (always required)
+# Project ID: https://app.descope.com/settings/project
+DESCOPE_PROJECT_ID=
 
-# Required only when using --from-api
-SHOPIFY_SHOP_URL=my-store.myshopify.com
-SHOPIFY_ACCESS_TOKEN=shpat_...
+# Management Key: https://app.descope.com/settings/company/managementkeys
+DESCOPE_MANAGEMENT_KEY=
+
+# Shopify credentials (only required when using --from-api)
+# Your store URL, e.g. my-store.myshopify.com (no https://)
+SHOPIFY_SHOP_URL=
+
+# --- Option 1: static access token ---
+# If you already have a Shopify Admin API access token, set it here directly.
+# The script will use it as-is and skip the OAuth flow.
+SHOPIFY_ACCESS_TOKEN=
+
+# --- Option 2: OAuth flow ---
+# If you don't have a token, the script can obtain one automatically via OAuth.
+# Create an app in the Shopify Dev Dashboard (https://shopify.dev/docs/apps/build/dev-dashboard),
+# add http://localhost:3000/callback as an allowed redirect URI, and paste the
+# Client ID and Client secret below. Leave SHOPIFY_ACCESS_TOKEN blank.
+# After the first successful run the token will be saved to this file automatically.
+SHOPIFY_CLIENT_ID=
+SHOPIFY_CLIENT_SECRET=
+
+# Optional: change the local port used for the OAuth callback (default: 3000).
+# If you change this, update the redirect URI in your Shopify app accordingly.
+# SHOPIFY_OAUTH_PORT=3000
 ```
 
 **Getting Descope credentials:**
@@ -92,17 +113,9 @@ SHOPIFY_ACCESS_TOKEN=shpat_...
 
 **Getting Shopify credentials (customer migration API mode only):**
 
-`SHOPIFY_SHOP_URL` is your store's `.myshopify.com` domain (no `https://`).
+`SHOPIFY_SHOP_URL` is your store's `.myshopify.com` domain — no `https://` prefix.
 
-For the access token, there are two options:
-
-**Option 1 — static token** (if you already have one): set `SHOPIFY_ACCESS_TOKEN` directly in `.env`. The script uses it as-is.
-
-**Option 2 — OAuth flow** (recommended): the script can obtain a token automatically by opening your browser.
-1. Create an app in the [Shopify Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard) with the `read_customers` scope
-2. In your app's configuration, add `http://localhost:3000/callback` as an allowed redirect URI (change `3000` if you set `SHOPIFY_OAUTH_PORT`)
-3. Copy the **Client ID** and **Client secret** from the app's settings page into `.env` as `SHOPIFY_CLIENT_ID` and `SHOPIFY_CLIENT_SECRET`, and leave `SHOPIFY_ACCESS_TOKEN` blank
-4. Run the script with `--from-api` — it will open your browser, complete the OAuth flow, and save the token to `.env` automatically for future runs
+For the access token there are two options. **Option 1 (static token):** if you already have a Shopify Admin API token, set `SHOPIFY_ACCESS_TOKEN` directly and leave the OAuth fields blank. **Option 2 (OAuth flow, recommended):** create an app in the [Shopify Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard) with the `read_customers` scope, add `http://localhost:3000/callback` as an allowed redirect URI, paste the Client ID and Client secret into `.env`, and leave `SHOPIFY_ACCESS_TOKEN` blank. Run the script with `--from-api` and it will open your browser, complete the flow, and save the token automatically.
 
 ### 5. Export your Shopify data
 ##### **Note:** Shopify role and user exports put the CSV file in a ZIP archive, so make sure to unzip it before running this script
