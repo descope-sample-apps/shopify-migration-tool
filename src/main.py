@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 
 from shopify_parser import parse_customers, parse_staff_users, parse_roles
@@ -57,11 +58,17 @@ _NEEDS_CONTACT_CSV = "needs_contact_info.csv"
 
 
 def _write_needs_contact_csv(placeholders: list[dict]) -> None:
-    """Write placeholder accounts (staff and/or customer) to a CSV for manual follow-up."""
+    """Append placeholder accounts (staff and/or customer) to a CSV for manual follow-up.
+
+    Opens in append mode so partial re-runs (e.g. staff only, then customers only)
+    accumulate entries rather than overwriting the previous pass.
+    """
     fieldnames = ["user_type", "shopify_id", "given_name", "family_name", "roles", "placeholder_login_id"]
-    with open(_NEEDS_CONTACT_CSV, "w", newline="") as f:
+    file_exists = os.path.isfile(_NEEDS_CONTACT_CSV)
+    with open(_NEEDS_CONTACT_CSV, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+        if not file_exists:
+            writer.writeheader()
         writer.writerows(placeholders)
     print(f"  → Written to {_NEEDS_CONTACT_CSV}")
 

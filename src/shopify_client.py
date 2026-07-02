@@ -33,6 +33,7 @@ import secrets
 import sys
 import time
 import webbrowser
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -42,6 +43,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SHOPIFY_SHOP_URL = os.getenv("SHOPIFY_SHOP_URL", "").strip().rstrip("/")
+if SHOPIFY_SHOP_URL.startswith(("http://", "https://")):
+    print(
+        "Error: SHOPIFY_SHOP_URL must not include the scheme. "
+        "Use 'my-store.myshopify.com', not 'https://my-store.myshopify.com'."
+    )
+    sys.exit(1)
 SHOPIFY_ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "").strip()
 SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID", "").strip()
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "").strip()
@@ -101,8 +108,8 @@ def _validate_shopify_hmac(params: dict[str, list[str]], secret: str) -> bool:
 
 
 def _save_token_to_env(token: str) -> None:
-    """Write or update SHOPIFY_ACCESS_TOKEN in the local .env file."""
-    env_path = ".env"
+    """Write or update SHOPIFY_ACCESS_TOKEN in the project root .env file."""
+    env_path = str(Path(__file__).parent.parent / ".env")
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
             lines = f.readlines()
@@ -269,7 +276,7 @@ def _graphql_request(query: str, variables: dict, max_retries: int = 4) -> dict:
             response = requests.post(url, json=payload, headers=headers, timeout=30)
 
             if response.status_code == 429:
-                wait = 5 ** (retries + 1)
+                wait = min(5 ** (retries + 1), 60)
                 logging.info(f"Rate limited by Shopify. Retrying in {wait}s...")
                 time.sleep(wait)
                 retries += 1
@@ -285,7 +292,7 @@ def _graphql_request(query: str, variables: dict, max_retries: int = 4) -> dict:
             return data.get("data", {})
 
         except requests.exceptions.Timeout:
-            wait = 5 ** (retries + 1)
+            wait = min(5 ** (retries + 1), 60)
             logging.warning(f"Request timed out. Retrying in {wait}s... ({retries + 1}/{max_retries})")
             time.sleep(wait)
             retries += 1
@@ -345,6 +352,19 @@ def fetch_customers() -> list[dict]:
     while True:
         variables = {"first": _PAGE_SIZE, "after": cursor}
         data = _graphql_request(_CUSTOMERS_QUERY, variables)
+
+        # An empty dict means _graphql_request exhausted retries or hit a
+        # GraphQL error. Abort rather than silently returning a truncated list.
+        if not data or "customers" not in data:
+            logging.error(
+                f"Shopify API returned no data on page {page} "
+                f"({len(customers)} customers fetched so far). Aborting."
+            )
+            print(
+                f"\nError: Shopify API failed on page {page}. "
+                f"Only {len(customers)} customer(s) fetched. Check logs for details."
+            )
+            sys.exit(1)
 
         customers_data = data.get("customers", {})
         edges = customers_data.get("edges", [])

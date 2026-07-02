@@ -12,7 +12,7 @@ Custom attributes auto-created in Descope before migration begins:
   - shopify_source             (String)   "staff" | "customer"
   - shopify_user_type          (String)   staff only — value passed through from Shopify CSV
                                           (e.g. "Admin", "Point of sale")
-  - shopify_needs_contact_info (Boolean)  True for placeholder staff and customer accounts
+  - shpfy_needs_contact        (Boolean)  True for placeholder staff and customer accounts
   - shopify_customer_id        (String)   customers only
   - shopify_total_spent        (String)   customers only
   - shopify_total_orders       (String)   customers only
@@ -36,10 +36,11 @@ Accounts with no email and no phone:
   Shopify allows creating staff and customer accounts with only a name. Since
   Descope requires a login ID, these accounts are created with a placeholder login
   ID of the form shopify-{staff|customer}-{id}@noreply.invalid, immediately
-  deactivated, and flagged with shopify_needs_contact_info=True. Staff roles are
-  still assigned. A needs_contact_info.csv is written to the working directory
-  listing all such accounts so that an operator can update their contact details
-  in Descope and reactivate them.
+  deactivated, and flagged with shpfy_needs_contact=True. Staff roles are
+  still assigned. Placeholder accounts are appended to needs_contact_info.csv
+  in the working directory so that an operator can update their contact details
+  in Descope and reactivate them. The file is opened in append mode so partial
+  re-runs (staff only, then customers only) accumulate entries.
 
 Collaborators:
   Shopify staff exports include collaborator accounts (external Shopify Partners).
@@ -69,6 +70,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+# Suppress httpx's per-request INFO lines (e.g. "HTTP/1.1 400 Bad Request").
+# These are noisy and misleading — expected 400s (already-exists) look like
+# errors. Our own log messages cover the meaningful outcomes instead.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ── Environment ───────────────────────────────────────────────────────────────
 
@@ -103,7 +108,7 @@ def _client() -> DescopeClient:
 _CUSTOM_ATTRIBUTES = {
     "shopify_source": "String",
     "shopify_user_type": "String",
-    "shopify_needs_contact_info": "Boolean",
+    "shpfy_needs_contact": "Boolean",
     "shopify_customer_id": "String",
     "shopify_total_spent": "String",
     "shopify_total_orders": "String",
@@ -129,7 +134,8 @@ def _placeholder_login_id(prefix: str, shopify_id: str) -> str:
 _ATTR_TYPE_MAP = {"String": 1, "Number": 2, "Boolean": 3}
 
 # Descope error codes
-_ERR_ALREADY_EXISTS = "E024104"  # permission / role already exists
+_ERR_ALREADY_EXISTS = "E024104"  # permission already exists
+_ERR_ROLE_EXISTS = "E024209"     # role already exists (different code from permissions)
 _ERR_USER_EXISTS = "E011001"     # user already exists (login ID taken)
 
 
@@ -147,12 +153,12 @@ def _api_post_with_retry(url: str, payload: dict, max_retries: int = 4) -> reque
             resp = requests.post(url, json=payload, headers=headers, timeout=15)
             if resp.status_code != 429:
                 return resp
-            wait = 5 ** (retries + 1)
+            wait = min(5 ** (retries + 1), 60)
             logging.info(f"Rate limited. Retrying in {wait}s...")
             time.sleep(wait)
             retries += 1
         except requests.exceptions.Timeout:
-            wait = 5 ** (retries + 1)
+            wait = min(5 ** (retries + 1), 60)
             logging.warning(f"Timeout. Retrying in {wait}s... ({retries + 1}/{max_retries})")
             time.sleep(wait)
             retries += 1
@@ -191,39 +197,51 @@ def _assign_roles(login_id: str, role_names: list[str], tenant_id: str | None) -
 
 def ensure_custom_attributes() -> None:
     """
-    Auto-create all required custom attributes in Descope.
-    Safe to call repeatedly — existing attributes are silently skipped
-    (the API returns a non-2xx but we ignore those selectively).
+    Auto-create all required custom attributes in Descope, one at a time.
+    Safe to call repeatedly — existing attributes are silently skipped.
+
+    Each attribute is posted individually so a single failure (e.g. name too
+    long, already exists) does not silently swallow the remaining attributes.
 
     Note: the Descope Python SDK does not expose custom attribute management,
     so this function calls the REST API directly.
     """
-    body = []
-    for name, type_str in _CUSTOM_ATTRIBUTES.items():
-        body.append(
-            {
-                "name": name,
-                "type": _ATTR_TYPE_MAP.get(type_str, 1),
-                "options": [],
-                "displayName": name,
-                "defaultValue": {},
-                "viewPermissions": [],
-                "editPermissions": [],
-                "editable": True,
-            }
-        )
+    _ERR_ATTR_EXISTS = "E016002"  # attribute name already taken
 
-    resp = _api_post_with_retry(
-        "https://api.descope.com/v1/mgmt/user/customattribute/create",
-        {"attributes": body},
-    )
-    if resp is None:
-        logging.error("Failed to create custom attributes — no response from Descope.")
-    elif not resp.ok:
-        # 400 is expected when some attributes already exist; log but continue.
-        logging.info(f"Custom attributes response {resp.status_code}: {resp.text[:200]}")
-    else:
-        logging.info("Custom attributes ensured in Descope.")
+    for name, type_str in _CUSTOM_ATTRIBUTES.items():
+        payload = {
+            "attributes": [
+                {
+                    "name": name,
+                    "type": _ATTR_TYPE_MAP.get(type_str, 1),
+                    "options": [],
+                    "displayName": name,
+                    "defaultValue": {},
+                    "viewPermissions": [],
+                    "editPermissions": [],
+                    "editable": True,
+                }
+            ]
+        }
+        resp = _api_post_with_retry(
+            "https://api.descope.com/v1/mgmt/user/customattribute/create",
+            payload,
+        )
+        if resp is None:
+            logging.error(f"Custom attribute '{name}': no response from Descope.")
+        elif resp.ok:
+            logging.info(f"Custom attribute '{name}' created.")
+        else:
+            try:
+                err_code = resp.json().get("errorCode", "")
+            except Exception:
+                err_code = ""
+            if err_code == _ERR_ATTR_EXISTS:
+                logging.info(f"Custom attribute '{name}' already exists — skipping.")
+            else:
+                logging.error(
+                    f"Custom attribute '{name}' failed ({resp.status_code}): {resp.text[:200]}"
+                )
 
 
 # ── Pre-migration: Base tagging roles ─────────────────────────────────────────
@@ -253,7 +271,7 @@ def ensure_base_roles(migrate_staff: bool, migrate_customers: bool) -> None:
             _client().mgmt.role.create(name=name, description=description, permission_names=[])
             logging.info(f"Base role '{name}' created.")
         except AuthException as e:
-            if _parse_error_code(e) == _ERR_ALREADY_EXISTS:
+            if _parse_error_code(e) == _ERR_ROLE_EXISTS:
                 logging.info(f"Base role '{name}' already exists — skipping.")
             else:
                 logging.error(f"Failed to create base role '{name}': {e.error_message}")
@@ -308,6 +326,7 @@ def process_roles(
                 if _parse_error_code(e) == _ERR_ALREADY_EXISTS:
                     perm_names.append(perm)
                     result["permissions_skipped"] += 1
+                    logging.info(f"Permission '{perm}' already exists — skipping.")
                 else:
                     result["permissions_failed"].append(
                         f"{perm} (role: {role['name']}) — {e.error_message}"
@@ -324,9 +343,20 @@ def process_roles(
             result["created"] += 1
             logging.info(f"Role '{role['name']}' created.")
         except AuthException as e:
-            if _parse_error_code(e) == _ERR_ALREADY_EXISTS:
+            if _parse_error_code(e) == _ERR_ROLE_EXISTS:
                 result["skipped_existing"] += 1
-                logging.info(f"Role '{role['name']}' already exists — skipping.")
+                logging.info(f"Role '{role['name']}' already exists — updating permissions.")
+                # Update the role's permission set so re-runs propagate permission changes.
+                try:
+                    _client().mgmt.role.update(
+                        name=role["name"],
+                        new_name=role["name"],
+                        description=f"Shopify role: {role['name']} [{role['category']}]",
+                        permission_names=perm_names,
+                    )
+                    logging.info(f"Role '{role['name']}' permissions updated.")
+                except AuthException as ue:
+                    logging.warning(f"Could not update permissions for existing role '{role['name']}': {ue.error_message}")
             else:
                 result["failed"].append(f"{role['name']} — {e.error_message}")
                 logging.error(f"Failed to create role '{role['name']}': {e.error_message}")
@@ -344,7 +374,7 @@ def process_staff_users(
 
     Staff accounts with no email and no phone are created with a placeholder
     login ID (shopify-staff-{id}@noreply.invalid), immediately deactivated,
-    and flagged with shopify_needs_contact_info=True. Their roles are still
+    and flagged with shpfy_needs_contact=True. Their roles are still
     assigned. Callers should write the returned 'placeholders' list to a CSV.
 
     Args:
@@ -406,18 +436,21 @@ def process_staff_users(
             custom_attributes = {
                 "shopify_source": "staff",
                 "shopify_user_type": user.get("user_type", ""),
-                "shopify_needs_contact_info": True,
+                "shpfy_needs_contact": True,
             }
         else:
             login_id = email or phone
             custom_attributes = {
                 "shopify_source": "staff",
                 "shopify_user_type": user.get("user_type", ""),
-                "shopify_needs_contact_info": False,
+                "shpfy_needs_contact": False,
             }
 
         # Always include "Staff" tagging role + any Shopify roles from CSV.
         all_roles = ["Staff"] + user["roles"]
+
+        # Track whether the user already existed so we know whether to touch activation.
+        already_existed = False
 
         # In tenant mode, fold role assignment into the create call via user_tenants
         # to save a round-trip. In project mode, pass role_names directly.
@@ -466,6 +499,7 @@ def process_staff_users(
 
         except AuthException as e:
             if _parse_error_code(e) == _ERR_USER_EXISTS:
+                already_existed = True
                 result["skipped_existing"] += 1
                 logging.info(f"Staff user '{login_id}' already exists — updating roles.")
                 # User exists: still assign roles so re-runs are idempotent.
@@ -482,14 +516,17 @@ def process_staff_users(
                 continue  # Don't attempt activate/deactivate if creation failed
 
         # Placeholder accounts are always deactivated regardless of Shopify status.
-        # Normal accounts honour the Shopify active/inactive status.
-        try:
-            if is_placeholder or not active:
-                _client().mgmt.user.deactivate(login_id=login_id)
-            else:
-                _client().mgmt.user.activate(login_id=login_id)
-        except AuthException as e:
-            logging.warning(f"Could not set active status for '{login_id}': {e.error_message}")
+        # Newly created normal accounts honour the Shopify active/inactive status.
+        # Existing users (re-run): skip activation to avoid overwriting manual changes
+        # made in the Descope console since the previous run.
+        if not already_existed:
+            try:
+                if is_placeholder or not active:
+                    _client().mgmt.user.deactivate(login_id=login_id)
+                else:
+                    _client().mgmt.user.activate(login_id=login_id)
+            except AuthException as e:
+                logging.warning(f"Could not set active status for '{login_id}': {e.error_message}")
 
     return result
 
@@ -501,7 +538,19 @@ def process_customers(
 ) -> dict:
     """
     Create customer users in Descope (or merge into an existing record if a
-    staff member shares the same email).
+    staff member shares the same email or phone).
+
+    Merge behaviour:
+      - If a customer's email matches an existing Descope user (e.g. a staff
+        member), the customer's Shopify attributes (shopify_customer_id,
+        shopify_total_spent, shopify_total_orders, shopify_tags) are patched
+        onto the existing record and the "Customer" tagging role is added.
+        shopify_source stays "staff" — staff takes precedence.
+      - If create() fails with a user-already-exists error and no email match
+        was found, the code searches by phone to find the duplicate and applies
+        the same patch + role logic.
+      - Activation state is intentionally left untouched for merged users to
+        avoid overwriting manual changes made in the Descope console.
 
     Args:
         customers: Normalized customer list from shopify_parser or shopify_client
@@ -544,7 +593,7 @@ def process_customers(
 
         custom_attributes = {
             "shopify_source": "customer",
-            "shopify_needs_contact_info": is_placeholder,
+            "shpfy_needs_contact": is_placeholder,
             "shopify_customer_id": customer.get("shopify_customer_id", ""),
             "shopify_total_spent": customer.get("total_spent", ""),
             "shopify_total_orders": customer.get("total_orders", ""),
@@ -553,6 +602,7 @@ def process_customers(
 
         # Placeholder customers: no email/phone to search by or log in with.
         if is_placeholder:
+            created_now = False
             try:
                 if tenant_id:
                     _client().mgmt.user.create(
@@ -572,7 +622,7 @@ def process_customers(
                         verified_email=False,
                         role_names=["Customer"],
                     )
-                _client().mgmt.user.deactivate(login_id=login_id)
+                created_now = True
                 result["placeholders"].append({
                     "user_type": "customer",
                     "shopify_id": customer.get("shopify_customer_id", ""),
@@ -594,6 +644,14 @@ def process_customers(
                     result["failed"].append(f"{login_id} — {e.error_message}")
                     logging.error(f"Failed to create placeholder customer '{login_id}': {e.error_message}")
 
+            # Deactivate outside the create() try so a deactivation failure
+            # doesn't cause the user to be miscounted as failed.
+            if created_now:
+                try:
+                    _client().mgmt.user.deactivate(login_id=login_id)
+                except AuthException as e:
+                    logging.warning(f"Could not deactivate placeholder customer '{login_id}': {e.error_message}")
+
             if i % 50 == 0:
                 print(f"Still working, migrated {i} customers...")
             continue
@@ -604,13 +662,25 @@ def process_customers(
             try:
                 resp = _client().mgmt.user.search_all(emails=[email])
                 existing_users = resp.get("users", [])
-            except AuthException:
-                pass
+            except AuthException as e:
+                logging.warning(
+                    f"Could not search for existing user with email '{email}': {e.error_message}. "
+                    "Skipping customer to avoid creating a duplicate."
+                )
+                result["failed"].append(f"{login_id} — search failed: {e.error_message}")
+                continue
 
         if existing_users:
             # Merge: update custom attributes on existing user, add Customer role
             existing = existing_users[0]
-            existing_login_id = existing["loginIds"][0]
+            _existing_login_ids = existing.get("loginIds") or []
+            if not _existing_login_ids:
+                logging.error(f"Existing user matched for '{login_id}' has no loginIds — skipping merge.")
+                result["failed"].append(f"{login_id} — matched user has no loginIds")
+                if i % 50 == 0:
+                    print(f"Still working, migrated {i} customers...")
+                continue
+            existing_login_id = _existing_login_ids[0]
             existing_attrs = existing.get("customAttributes") or {}
 
             # Staff takes precedence for shopify_source; add customer attrs
@@ -624,15 +694,13 @@ def process_customers(
                 merged_attrs[key] = custom_attributes[key]
 
             try:
-                _client().mgmt.user.update(
+                # patch() only writes the fields we pass — existing email, phone,
+                # verified_email, etc. are left untouched automatically.
+                # Activation state is also left untouched — we don't want to
+                # override manual changes made in the Descope console.
+                _client().mgmt.user.patch(
                     login_id=existing_login_id,
-                    email=existing.get("email", email),
-                    phone=existing.get("phone") or phone,
-                    given_name=existing.get("givenName") or customer.get("given_name"),
-                    family_name=existing.get("familyName") or customer.get("family_name"),
                     custom_attributes=merged_attrs,
-                    verified_email=existing.get("verifiedEmail", False),
-                    verified_phone=existing.get("verifiedPhone", False),
                 )
                 _assign_roles(existing_login_id, ["Customer"], tenant_id)
                 result["merged"] += 1
@@ -672,17 +740,91 @@ def process_customers(
                         additional_login_ids=additional_login_ids,
                         role_names=["Customer"],
                     )
-                _client().mgmt.user.activate(login_id=login_id)
                 result["created"] += 1
                 logging.info(f"Customer '{login_id}' created.")
             except AuthException as e:
                 if _parse_error_code(e) == _ERR_USER_EXISTS:
-                    # Race condition or phone-only duplicate — treat as merge
-                    result["merged"] += 1
-                    logging.info(f"Customer '{login_id}' already existed — counted as merged.")
+                    # Phone-only duplicate or race condition — look up the existing
+                    # user and apply the same merge logic used in the email path.
+                    logging.info(
+                        f"Customer '{login_id}' already existed — attempting merge."
+                    )
+                    if not phone:
+                        # Email-only customer: no phone to search by, so the
+                        # conflicting record can't be identified for merge.
+                        phone_matches = []
+                        logging.error(
+                            f"Customer '{login_id}' already exists in Descope but "
+                            "cannot be located for merge (email search found nothing "
+                            "and there is no phone to search by). "
+                            "Shopify attributes and Customer role were NOT applied."
+                        )
+                        result["failed"].append(
+                            f"{login_id} — already exists, no phone for merge lookup"
+                        )
+                    else:
+                        try:
+                            lookup = _client().mgmt.user.search_all(phones=[phone])
+                            phone_matches = lookup.get("users", [])
+                        except AuthException as se:
+                            phone_matches = []
+                            logging.warning(
+                                f"Could not look up phone-duplicate '{login_id}': {se.error_message}"
+                            )
+
+                    if phone_matches:
+                        existing = phone_matches[0]
+                        _phone_login_ids = existing.get("loginIds") or []
+                        if not _phone_login_ids:
+                            logging.error(
+                                f"Phone-duplicate user for '{login_id}' has no loginIds — skipping merge."
+                            )
+                            result["failed"].append(f"{login_id} — phone-duplicate has no loginIds")
+                        else:
+                            existing_login_id = _phone_login_ids[0]
+                            existing_attrs = existing.get("customAttributes") or {}
+                            merged_attrs = {**existing_attrs}
+                            for key in [
+                                "shopify_customer_id",
+                                "shopify_total_spent",
+                                "shopify_total_orders",
+                                "shopify_tags",
+                            ]:
+                                merged_attrs[key] = custom_attributes[key]
+                            try:
+                                # patch() only writes the fields we pass — existing email,
+                                # phone, verified_email, etc. are left untouched automatically.
+                                _client().mgmt.user.patch(
+                                    login_id=existing_login_id,
+                                    custom_attributes=merged_attrs,
+                                )
+                                _assign_roles(existing_login_id, ["Customer"], tenant_id)
+                                result["merged"] += 1
+                                logging.info(
+                                    f"Merged customer attributes into phone-duplicate '{existing_login_id}'."
+                                )
+                            except AuthException as me:
+                                result["failed"].append(f"{login_id} — merge failed: {me.error_message}")
+                                logging.error(
+                                    f"Failed to merge phone-duplicate customer '{login_id}': {me.error_message}"
+                                )
+                    else:
+                        # Couldn't look up the existing user; count as merged to avoid double-counting.
+                        result["merged"] += 1
+                        logging.warning(
+                            f"Customer '{login_id}' already existed but lookup returned no match — "
+                            "counted as merged without attribute update."
+                        )
                 else:
                     result["failed"].append(f"{login_id} — {e.error_message}")
                     logging.error(f"Failed to create customer '{login_id}': {e.error_message}")
+            else:
+                # Activate outside the create() try so an activation failure
+                # doesn't cause the user to be miscounted as failed.
+                try:
+                    _client().mgmt.user.activate(login_id=login_id)
+                except AuthException as e:
+                    logging.warning(f"Could not activate customer '{login_id}': {e.error_message}")
 
         if i % 50 == 0:
             print(f"Still working, migrated {i} customers...")

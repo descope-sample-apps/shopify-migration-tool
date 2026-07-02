@@ -12,7 +12,6 @@ Expected CSV exports (from Shopify Admin > Settings > Export):
 
 import csv
 import logging
-from collections import defaultdict
 
 
 def parse_customers(file_paths: list[str]) -> list[dict]:
@@ -49,6 +48,12 @@ def parse_customers(file_paths: list[str]) -> list[dict]:
                 # Deduplicate across multiple files. Customers with no email or phone
                 # are kept — migration_utils handles them with a placeholder login ID.
                 dedup_key = email or phone or row.get("Customer ID", "").strip()
+                if not dedup_key:
+                    logging.warning(
+                        f"Skipping row in {file_path} with no email, phone, or Customer ID — "
+                        "cannot deduplicate or create a login ID."
+                    )
+                    continue
                 if dedup_key in seen_keys:
                     logging.info(
                         f"Skipping duplicate customer {dedup_key} found in {file_path}."

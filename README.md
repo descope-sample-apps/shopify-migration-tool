@@ -22,10 +22,10 @@ Shopify caps customer CSV exports at **15 MB**. For stores with large customer l
 Shopify allows creating staff accounts with only a first and last name — no email or phone. Customers can also be created without contact info. Since Descope requires a login ID, these accounts are handled as follows:
 - A placeholder login ID is assigned: `shopify-staff-{id}@noreply.invalid` (staff) or `shopify-customer-{id}@noreply.invalid` (customers)
 - The account is created in Descope with roles intact but **immediately deactivated**
-- The `shopify_needs_contact_info` custom attribute is set to `true`
-- A `needs_contact_info.csv` file is written to your working directory listing all affected accounts, with a `user_type` column indicating `"staff"` or `"customer"`
+- The `shpfy_needs_contact` custom attribute is set to `true`
+- The account is appended to `needs_contact_info.csv` in your working directory, with a `user_type` column indicating `"staff"` or `"customer"` (the file accumulates across partial re-runs)
 
-After migration, search for `shopify_needs_contact_info=true` in the Descope console, update each account with a real email or phone number, and reactivate them.
+After migration, search for `shpfy_needs_contact=true` in the Descope console, update each account with a real email or phone number, and reactivate them.
 
 ### Collaborators
 Shopify staff exports include **collaborator** accounts — external Shopify Partners who have been granted store access. These are not your employees and are not migrated. Collaborators are counted in the summary and logged as skipped.
@@ -250,6 +250,8 @@ Each customer is created as a Descope user with:
 ### Overlap (staff member who is also a customer)
 If the same email appears in both exports, the user is created once (as staff) and the customer attributes are merged into the same record. Both "Customer" and their staff roles are assigned.
 
+> **Note:** The merged user's activation state is left as-is from the staff migration. If the staff member had a Pending or Inactive status in Shopify (and was therefore created as deactivated in Descope), they will remain deactivated after the customer attributes are merged in. Check the Descope console after migration and manually reactivate any such accounts.
+
 ### Custom attributes
 The following custom attributes are automatically created in your Descope project before migration begins:
 
@@ -257,7 +259,7 @@ The following custom attributes are automatically created in your Descope projec
 |---|---|---|
 | `shopify_source` | String | All users (`"staff"` or `"customer"`) |
 | `shopify_user_type` | String | Staff only (`"Admin"`, `"Point of sale"`, etc. — whatever Shopify exports) |
-| `shopify_needs_contact_info` | Boolean | Staff and customers — `true` if account has a placeholder login ID |
+| `shpfy_needs_contact` | Boolean | Staff and customers — `true` if account has a placeholder login ID |
 | `shopify_customer_id` | String | Customers |
 | `shopify_total_spent` | String | Customers |
 | `shopify_total_orders` | String | Customers |
