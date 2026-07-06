@@ -5,11 +5,6 @@ Fetches customer data from the Shopify GraphQL Admin API and normalizes it
 to the same structure that shopify_parser.parse_customers() returns, so
 migration_utils.py is source-agnostic.
 
-Note: Staff users and roles are NOT available via this client — the GraphQL
-staffMembers query returns no role/permission data, and is only accessible on
-Shopify Plus/Advanced stores with a manually approved read_users scope.
-When migrating staff or roles, those must come from CSV exports — not this client.
-
 Authentication (--from-api mode):
   Option 1 — static token:
     Set SHOPIFY_ACCESS_TOKEN in .env directly. The script uses it as-is.
