@@ -7,7 +7,7 @@ A Python utility for migrating your Shopify customers to Descope.
 ## ⚠️ Important Notes
 
 ### No passwords
-Shopify does not export user passwords. All migrated users will have no credentials in Descope. You'll need to configure a Descope flow (magic link, OTP, SSO, etc.) for users to authenticate for the first time after migration, after which they can set a new password if you wish.
+Shopify does not export user passwords. All migrated users will have no credentials in Descope. You'll need to configure a Descope flow (magic link, OTP, SSO, etc.) for users to authenticate for the first time after migration, after which they can set a new password if you wish to allow so.
 
 ### Customer CSV export cap (15 MB)
 Shopify caps customer CSV exports at **15 MB**. For stores with large customer lists:
@@ -94,7 +94,7 @@ SHOPIFY_CLIENT_SECRET=
 
 `SHOPIFY_SHOP_URL` is your store's `.myshopify.com` domain — no `https://` prefix.
 
-For the access token there are two options. **Option 1 (static token):** if you already have a Shopify Admin API token, set `SHOPIFY_ACCESS_TOKEN` directly and leave the OAuth fields blank. **Option 2 (OAuth flow, recommended):** create an app in the [Shopify Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard) with the `read_customers` scope, add `http://localhost:3000/callback` as an allowed redirect URI, paste the Client ID and Client secret into `.env`, and leave `SHOPIFY_ACCESS_TOKEN` blank. Run the script with `--from-api` and it will open your browser, complete the flow, and save the token automatically.
+For the access token there are two options. **Option 1 (static token):** if you already have a Shopify Admin API token, set `SHOPIFY_ACCESS_TOKEN` directly and leave the OAuth fields blank. **Option 2 (OAuth flow, recommended):** create an app in the [Shopify Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard) with the `read_customers` scope, add `http://localhost:3000/callback` as an allowed redirect URI and add the app to your store, paste the Client ID and Client secret into `.env`, and leave `SHOPIFY_ACCESS_TOKEN` blank. Run the script with `--from-api` and it will open your browser, complete the flow, and save the token automatically.
 
 ### 5. Export your Shopify data
 
