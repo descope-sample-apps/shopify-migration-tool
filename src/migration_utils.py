@@ -4,20 +4,14 @@ migration_utils.py
 All Descope SDK interactions for the Shopify → Descope customer migration.
 
 Custom attributes auto-created in Descope before migration begins:
-  - shpfy_needs_contact        (Boolean)  True for placeholder customer accounts
   - shopify_customer_id        (String)   Shopify customer ID
   - shopify_total_spent        (String)   lifetime spend value
   - shopify_total_orders       (String)   total order count
   - shopify_tags               (String)   comma-separated Shopify tags
   - shopify_note               (String)   internal Shopify note (not customer-visible)
 
-Accounts with no email and no phone:
-  Shopify allows creating customer accounts with only a name. Since Descope
-  requires a login ID, these accounts are created with a placeholder login ID
-  of the form shopify-customer-{id}@noreply.invalid, immediately deactivated,
-  and flagged with shpfy_needs_contact=True. A needs_contact_info.csv file is
-  written to the working directory so an operator can update contact details and
-  reactivate them.
+Customers with no email and no phone are skipped — Descope requires a login ID
+and there is no safe placeholder that would let the customer authenticate later.
 """
 
 from __future__ import annotations
@@ -80,7 +74,6 @@ def _client() -> DescopeClient:
 # ── Custom attribute definitions ──────────────────────────────────────────────
 
 _CUSTOM_ATTRIBUTES = {
-    "shpfy_needs_contact": "Boolean",
     "shopify_customer_id": "String",
     "shopify_total_spent": "String",
     "shopify_total_orders": "String",
@@ -90,24 +83,11 @@ _CUSTOM_ATTRIBUTES = {
 
 _ATTR_TYPE_MAP = {"String": 1, "Number": 2, "Boolean": 3}
 
-_PLACEHOLDER_DOMAIN = "noreply.invalid"  # IANA-reserved TLD; can never be a real address
-
 # Descope error codes
 _ERR_USER_EXISTS = "E011001"  # user already exists (login ID taken)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _placeholder_login_id(shopify_id: str) -> str:
-    """
-    Generate a placeholder login ID for a customer with no email or phone.
-
-    Format: shopify-customer-{shopify_id}@noreply.invalid
-    Example: _placeholder_login_id("7452021653713")
-               → shopify-customer-7452021653713@noreply.invalid
-    """
-    return f"shopify-customer-{shopify_id}@{_PLACEHOLDER_DOMAIN}"
-
 
 def _api_post_with_retry(url: str, payload: dict, max_retries: int = 4) -> requests.Response | None:
     """POST to the Descope management REST API with rate-limit retry."""
@@ -203,17 +183,15 @@ def process_customers(customers: list[dict], dry_run: bool, verbose: bool) -> di
 
     Merge behaviour:
       - Email match: the customer's Shopify attributes are patched onto the
-        existing record.
+        existing record, and their phone is added as an additional login ID if
+        not already present.
       - create() fails with user-already-exists and no prior email match was
         found: searches by phone to locate the duplicate and applies the same
-        merge logic.
+        merge logic (adding email as an additional login ID if not present).
       - Activation state is left untouched for merged users.
 
-    Placeholder accounts (no email and no phone):
-      A placeholder login ID of the form shopify-customer-{id}@noreply.invalid
-      is assigned, the account is created and immediately deactivated, and
-      shpfy_needs_contact is set to True. Callers should write the returned
-      'placeholders' list to needs_contact_info.csv for manual follow-up.
+    Customers with no email and no phone are skipped — they cannot be given a
+    meaningful login ID.
 
     Args:
         customers: Normalized customer list from shopify_parser or shopify_client
@@ -222,23 +200,19 @@ def process_customers(customers: list[dict], dry_run: bool, verbose: bool) -> di
         "total": len(customers),
         "created": 0,
         "merged": 0,
+        "skipped": 0,
         "failed": [],
-        # Each entry: {shopify_id, given_name, family_name, placeholder_login_id}
-        "placeholders": [],
     }
 
     if dry_run:
         no_contact = [c for c in customers if not c.get("email") and not c.get("phone")]
-        with_contact = [c for c in customers if c.get("email") or c.get("phone")]
-        print(f"Would migrate {len(with_contact)} customers to Descope")
+        result["skipped"] = len(no_contact)
+        print(f"Would migrate {len(customers) - len(no_contact)} customers to Descope")
         if no_contact:
-            print(
-                f"Would create {len(no_contact)} placeholder customer account(s) "
-                f"(no email or phone) and write needs_contact_info.csv"
-            )
+            print(f"Would skip {len(no_contact)} customer(s) — no email or phone")
         if verbose:
             for c in customers:
-                login = c.get("email") or c.get("phone") or f"[placeholder: {_placeholder_login_id(c['shopify_customer_id'])}]"
+                login = c.get("email") or c.get("phone") or f"[no contact — {c.get('shopify_customer_id')}]"
                 print(f"  {login}")
         return result
 
@@ -247,60 +221,26 @@ def process_customers(customers: list[dict], dry_run: bool, verbose: bool) -> di
     for i, customer in enumerate(customers, 1):
         email = customer["email"]
         phone = customer["phone"]
-        is_placeholder = not email and not phone
-        login_id = email or phone or _placeholder_login_id(customer["shopify_customer_id"])
+        login_id = email or phone
+
+        if not login_id:
+            # Both parser and fetch_customers filter these out, but guard here
+            # as a safety net so a data-quality issue can't cause a crash.
+            result["skipped"] += 1
+            logging.warning(
+                f"Customer ID {customer.get('shopify_customer_id')} has no email or phone — skipped."
+            )
+            if i % 50 == 0:
+                print(f"Still working, migrated {i} customers...")
+            continue
 
         custom_attributes = {
-            "shpfy_needs_contact": is_placeholder,
             "shopify_customer_id": customer.get("shopify_customer_id", ""),
             "shopify_total_spent": customer.get("total_spent", ""),
             "shopify_total_orders": customer.get("total_orders", ""),
             "shopify_tags": customer.get("tags", ""),
             "shopify_note": customer.get("note", ""),
         }
-
-        # ── Placeholder customers ─────────────────────────────────────────────
-        if is_placeholder:
-            created_now = False
-            try:
-                _client().mgmt.user.create(
-                    login_id=login_id,
-                    given_name=customer.get("given_name"),
-                    family_name=customer.get("family_name"),
-                    custom_attributes=custom_attributes,
-                    verified_email=False,
-                )
-                created_now = True
-                result["placeholders"].append({
-                    "shopify_id": customer.get("shopify_customer_id", ""),
-                    "given_name": customer.get("given_name", ""),
-                    "family_name": customer.get("family_name", ""),
-                    "placeholder_login_id": login_id,
-                })
-                result["created"] += 1
-                logging.warning(
-                    f"Customer ID {customer.get('shopify_customer_id')} has no contact info — "
-                    f"created with placeholder login ID '{login_id}'."
-                )
-            except AuthException as e:
-                if _parse_error_code(e) == _ERR_USER_EXISTS:
-                    result["merged"] += 1
-                    logging.info(f"Placeholder customer '{login_id}' already existed — counted as merged.")
-                else:
-                    result["failed"].append(f"{login_id} — {e.error_message}")
-                    logging.error(f"Failed to create placeholder customer '{login_id}': {e.error_message}")
-
-            # Deactivate outside the create() try so a deactivation failure
-            # doesn't cause the user to be miscounted as failed.
-            if created_now:
-                try:
-                    _client().mgmt.user.deactivate(login_id=login_id)
-                except AuthException as e:
-                    logging.warning(f"Could not deactivate placeholder customer '{login_id}': {e.error_message}")
-
-            if i % 50 == 0:
-                print(f"Still working, migrated {i} customers...")
-            continue
 
         # ── Check for pre-existing Descope user with same email ───────────────
         existing_users = []

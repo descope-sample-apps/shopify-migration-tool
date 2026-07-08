@@ -23,8 +23,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
-import os
 import sys
 
 from shopify_parser import parse_customers
@@ -33,21 +31,6 @@ from migration_utils import (
     ensure_custom_attributes,
     process_customers,
 )
-
-
-_NEEDS_CONTACT_CSV = "needs_contact_info.csv"
-
-
-def _write_needs_contact_csv(placeholders: list[dict]) -> None:
-    """Write placeholder customer accounts to a CSV for manual follow-up."""
-    fieldnames = ["shopify_id", "given_name", "family_name", "placeholder_login_id"]
-    file_exists = os.path.isfile(_NEEDS_CONTACT_CSV)
-    with open(_NEEDS_CONTACT_CSV, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(placeholders)
-    print(f"  → Written to {_NEEDS_CONTACT_CSV}")
 
 
 def _print_summary(customer_result: dict, dry_run: bool) -> None:
@@ -61,25 +44,12 @@ def _print_summary(customer_result: dict, dry_run: bool) -> None:
     print(f"  Total processed       : {customer_result['total']}")
     print(f"  Created               : {customer_result['created']}")
     print(f"  Merged into existing  : {customer_result['merged']}")
-    print(f"  Placeholder accounts  : {len(customer_result['placeholders'])}")
+    print(f"  Skipped (no login ID) : {customer_result.get('skipped', 0)}")
     print(f"  Failed                : {len(customer_result['failed'])}")
-    if customer_result["placeholders"] and not dry_run:
-        print(
-            f"  ⚠ {len(customer_result['placeholders'])} customer(s) had no contact info "
-            "— placeholder login IDs assigned."
-        )
     if customer_result["failed"]:
         print("  Failed customers:")
         for c in customer_result["failed"]:
             print(f"    - {c}")
-
-    if customer_result["placeholders"] and not dry_run:
-        print()
-        print(
-            f"  {len(customer_result['placeholders'])} account(s) need contact info added "
-            f"— writing {_NEEDS_CONTACT_CSV}..."
-        )
-        _write_needs_contact_csv(customer_result["placeholders"])
 
     print()
     if not dry_run:

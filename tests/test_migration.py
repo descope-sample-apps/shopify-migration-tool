@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import shopify_parser
 from shopify_client import _normalize_customer
-from migration_utils import _placeholder_login_id, _PLACEHOLDER_DOMAIN
 
 
 # ── shopify_parser.parse_customers tests ─────────────────────────────────────
@@ -80,7 +79,7 @@ class TestParseCustomers(unittest.TestCase):
         self.assertIsNone(result[0]["family_name"])
 
     def test_customer_without_email_or_phone_kept(self):
-        """Customers with no contact info are kept — migration_utils assigns a placeholder."""
+        """Customers with no contact info are kept by the parser so process_customers can count them as skipped."""
         path = self._csv_path()
         self._write_csv([{
             "Customer ID": "789",
@@ -182,90 +181,6 @@ class TestNormalizeCustomer(unittest.TestCase):
         result = _normalize_customer(self._node())
         self.assertEqual(result["total_spent"], "99.99")
         self.assertEqual(result["total_orders"], "3")
-
-
-# ── _placeholder_login_id tests ───────────────────────────────────────────────
-
-class TestPlaceholderLoginId(unittest.TestCase):
-
-    def test_format(self):
-        result = _placeholder_login_id("7452021653713")
-        self.assertEqual(result, f"shopify-customer-7452021653713@{_PLACEHOLDER_DOMAIN}")
-
-    def test_uses_reserved_tld(self):
-        """Placeholder domain must use .invalid (IANA-reserved, can never be real)."""
-        self.assertTrue(_placeholder_login_id("123").endswith(".invalid"))
-
-    def test_different_ids_produce_different_login_ids(self):
-        self.assertNotEqual(_placeholder_login_id("111"), _placeholder_login_id("222"))
-
-
-# ── no-contact customer parser tests ─────────────────────────────────────────
-
-class TestParseCustomersNoContact(unittest.TestCase):
-    """
-    Customers with no email and no phone must be kept by shopify_parser —
-    the placeholder login ID logic lives in migration_utils.
-    """
-
-    def setUp(self):
-        import tempfile
-        self.tmpdir = tempfile.mkdtemp()
-
-    def _csv_path(self, name="customers.csv"):
-        return os.path.join(self.tmpdir, name)
-
-    def _write_csv(self, rows, path):
-        with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-            writer.writeheader()
-            writer.writerows(rows)
-
-    def _row(self, **kwargs):
-        base = {
-            "Customer ID": "999",
-            "First Name": "Ghost",
-            "Last Name": "User",
-            "Email": "",
-            "Phone": "",
-            "Total Spent": "0.00",
-            "Total Orders": "0",
-            "Tags": "",
-            "Note": "",
-        }
-        base.update(kwargs)
-        return base
-
-    def test_no_contact_customer_is_parsed(self):
-        path = self._csv_path()
-        self._write_csv([self._row()], path)
-        result = shopify_parser.parse_customers([path])
-        self.assertEqual(len(result), 1)
-        self.assertIsNone(result[0]["email"])
-        self.assertIsNone(result[0]["phone"])
-        self.assertEqual(result[0]["shopify_customer_id"], "999")
-        self.assertEqual(result[0]["given_name"], "Ghost")
-
-    def test_no_contact_customer_mixed_with_normal(self):
-        path = self._csv_path()
-        self._write_csv([
-            self._row(**{"Customer ID": "1", "Email": "", "Phone": ""}),
-            self._row(**{"Customer ID": "2", "Email": "real@example.com", "Phone": ""}),
-        ], path)
-        result = shopify_parser.parse_customers([path])
-        self.assertEqual(len(result), 2)
-        emails = {c["email"] for c in result}
-        self.assertIn(None, emails)
-        self.assertIn("real@example.com", emails)
-
-    def test_no_contact_customers_deduplicated_by_id(self):
-        """Two no-contact customers in separate files with the same ID should deduplicate."""
-        path1 = self._csv_path("c1.csv")
-        path2 = self._csv_path("c2.csv")
-        self._write_csv([self._row(**{"Customer ID": "42"})], path1)
-        self._write_csv([self._row(**{"Customer ID": "42"})], path2)
-        result = shopify_parser.parse_customers([path1, path2])
-        self.assertEqual(len(result), 1)
 
 
 if __name__ == "__main__":

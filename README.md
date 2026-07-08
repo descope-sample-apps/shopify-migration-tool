@@ -15,13 +15,7 @@ Shopify caps customer CSV exports at **15 MB**. For stores with large customer l
 - Or use `--from-api` which fetches all customers via the GraphQL API with automatic pagination (recommended for large stores)
 
 ### Accounts with no contact info
-Shopify allows creating customer accounts with only a first and last name — no email or phone. Since Descope requires a login ID, these accounts are handled as follows:
-- A placeholder login ID is assigned: `shopify-customer-{id}@noreply.invalid`
-- The account is created in Descope but **immediately deactivated**
-- The `shpfy_needs_contact` custom attribute is set to `true`
-- The account is appended to `needs_contact_info.csv` in your working directory (the file accumulates across partial re-runs)
-
-After migration, search for `shpfy_needs_contact=true` in the Descope console, update each account with a real email or phone number, and reactivate them.
+Shopify allows creating customer accounts with only a first and last name — no email or phone. Since Descope requires a login ID and there's no safe fallback, these accounts are **skipped** during migration. They will appear in the log file as skipped entries.
 
 ---
 
@@ -90,11 +84,13 @@ SHOPIFY_CLIENT_SECRET=
 - Project ID: [app.descope.com/settings/project](https://app.descope.com/settings/project)
 - Management Key: [app.descope.com/settings/company/managementkeys](https://app.descope.com/settings/company/managementkeys)
 
-**Getting Shopify credentials (--from-api mode only):**
+**Getting Shopify credentials (`--from-api` mode only):**
 
 `SHOPIFY_SHOP_URL` is your store's `.myshopify.com` domain — no `https://` prefix.
 
-For the access token there are two options. **Option 1 (static token):** if you already have a Shopify Admin API token, set `SHOPIFY_ACCESS_TOKEN` directly and leave the OAuth fields blank. **Option 2 (OAuth flow, recommended):** create an app in the [Shopify Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard) with the `read_customers` scope, add `http://localhost:3000/callback` as an allowed redirect URI and add the app to your store, paste the Client ID and Client secret into `.env`, and leave `SHOPIFY_ACCESS_TOKEN` blank. Run the script with `--from-api` and it will open your browser, complete the flow, and save the token automatically.
+For the access token there are two options:
+- **Option 1 (static token):** if you already have a Shopify Admin API token, set `SHOPIFY_ACCESS_TOKEN` directly and leave the OAuth fields blank.
+- **Option 2 (OAuth flow, recommended):** create an app in the [Shopify Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard) with the `read_customers` scope, add `http://localhost:3000/callback` as an allowed redirect URI and add the app to your store, paste the Client ID and Client secret into `.env`, and leave `SHOPIFY_ACCESS_TOKEN` blank. Run the script with `--from-api` and it will open your browser, complete the flow, and save the token automatically.
 
 ### 5. Export your Shopify data
 
@@ -152,9 +148,9 @@ MIGRATION SUMMARY
 
 ── Customers ────────────────────────────────────────────
   Total processed       : 523
-  Created               : 521
+  Created               : 520
   Merged into existing  : 2
-  Placeholder accounts  : 0
+  Skipped (no login ID) : 1
   Failed                : 0
 
 Migration complete. Full log written to logs/
@@ -168,15 +164,16 @@ Migration complete. Full log written to logs/
 ### Customers
 Each customer is created as a Descope user with:
 - Email as primary login ID; phone as additional login ID (if present)
-- Active status (accounts with no contact info are created deactivated with a placeholder login ID)
+- Active status
 - Custom attributes from Shopify (see table below)
+
+Customers with no email and no phone are skipped — they can't be given a login ID.
 
 ### Custom attributes
 The following custom attributes are automatically created in your Descope project before migration begins:
 
 | Attribute | Type | Description |
 |---|---|---|
-| `shpfy_needs_contact` | Boolean | `true` if the account has a placeholder login ID (no email or phone) |
 | `shopify_customer_id` | String | Shopify customer ID |
 | `shopify_total_spent` | String | Lifetime spend value |
 | `shopify_total_orders` | String | Total order count |
@@ -184,7 +181,7 @@ The following custom attributes are automatically created in your Descope projec
 | `shopify_note` | String | Internal Shopify note |
 
 ### Existing Descope users
-If a customer's email already exists in Descope (e.g. a pre-existing user), the migration merges in the Shopify attributes without touching the existing account's activation state or other data.
+If a customer's email already exists in Descope (e.g. a pre-existing user), the migration merges in the Shopify custom attributes and, if the Shopify record has a phone number not already on the account, adds it as an additional login ID. The account's activation state and all other existing data are left untouched.
 
 ---
 

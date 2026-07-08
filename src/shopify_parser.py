@@ -9,6 +9,8 @@ Expected CSV export (from Shopify Admin > Customers > Export):
   - customers_export.csv
 """
 
+from __future__ import annotations
+
 import csv
 import logging
 
@@ -19,7 +21,8 @@ def parse_customers(file_paths: list[str]) -> list[dict]:
 
     Shopify caps customer CSV exports at 15 MB. For larger stores, export
     multiple files and pass them all here — duplicates are deduplicated by email,
-    phone, or Customer ID (for accounts with no contact info).
+    phone, or Customer ID. Customers with no email or phone are included and
+    counted as skipped in the migration summary.
 
     Returns a list of normalized customer dicts:
     {
@@ -44,13 +47,14 @@ def parse_customers(file_paths: list[str]) -> list[dict]:
                 email = row.get("Email", "").strip() or None
                 phone = row.get("Phone", "").strip() or None
 
-                # Deduplicate across multiple files. Customers with no email or phone
-                # are kept — migration_utils handles them with a placeholder login ID.
+                # Deduplicate by email, phone, or Customer ID (for no-contact rows).
+                # No-contact customers are kept here and skipped in process_customers
+                # so they appear in the migration summary totals.
                 dedup_key = email or phone or row.get("Customer ID", "").strip()
                 if not dedup_key:
                     logging.warning(
                         f"Skipping row in {file_path} with no email, phone, or Customer ID — "
-                        "cannot deduplicate or create a login ID."
+                        "cannot deduplicate."
                     )
                     continue
                 if dedup_key in seen_keys:
