@@ -1,47 +1,56 @@
 # Shopify → Descope Migration Tool
 
-A Python utility for migrating your Shopify customers to Descope.
+A guide for migrating your Shopify customers to Descope. There are 2 ways to migrate:
+1. [Running a script for batch migration using using the Shopify API or CSV exports](#batch-migration-script)
+2. [Just in time migration using the Shopify API in a Descope flow](#just-in-time-migration-guide)
 
 ---
 
-## ⚠️ Important Notes
+## Adding Descope as an OIDC Identity Provider in Shopify
+Follow the [Descope with Shopify Plus guide](https://docs.descope.com/getting-started/web-development-platforms/shopify). Make sure to check the `Force Authentication` checkbox and set the Client Authentication type to `Access Key`.
 
-### No passwords
+---
+
+## Batch Migration Script
+
+### ⚠️ Important Notes
+
+#### No passwords
 Shopify does not export user passwords. All migrated users will have no credentials in Descope. You'll need to configure a Descope flow (magic link, OTP, SSO, etc.) for users to authenticate for the first time after migration, after which they can set a new password if you wish to allow so.
 
-### Customer CSV export cap (15 MB)
+#### Customer CSV export cap (15 MB)
 Shopify caps customer CSV exports at **15 MB**. For stores with large customer lists:
 - Export multiple CSVs using Shopify's segment or date-range filters, then pass them all to `--customers` — duplicates are automatically deduplicated
 - Or use `--from-api` which fetches all customers via the GraphQL API with automatic pagination (recommended for large stores)
 
-### Accounts with no contact info
+#### Accounts with no contact info
 Shopify allows creating customer accounts with only a first and last name — no email or phone. Since Descope requires a login ID and there's no safe fallback, these accounts are **skipped** during migration. They will appear in the log file as skipped entries.
 
 ---
 
-## Setup
+### Setup
 
-### 1. Clone the repo
+#### 1. Clone the repo
 
 ```bash
 git clone https://github.com/descope/descope-shopify-migration.git
 cd descope-shopify-migration
 ```
 
-### 2. Create a virtual environment
+#### 2. Create a virtual environment
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-### 3. Install dependencies
+#### 3. Install dependencies
 
 ```bash
 pip3 install -r requirements.txt
 ```
 
-### 4. Configure environment variables
+#### 4. Configure environment variables
 
 Copy `.env.example` to `.env` and fill in your credentials:
 
@@ -69,7 +78,7 @@ SHOPIFY_ACCESS_TOKEN=
 # --- Option 2: OAuth flow ---
 # If you don't have a token, the script can obtain one automatically via OAuth.
 # Create an app in the Shopify Dev Dashboard (https://shopify.dev/docs/apps/build/dev-dashboard),
-# add http://localhost:3000/callback as an allowed redirect URI, and paste the
+# add the read_customers score and http://localhost:3000/callback as an allowed redirect URI, and paste the
 # Client ID and Client secret below. Leave SHOPIFY_ACCESS_TOKEN blank.
 # After the first successful run the token will be saved to this file automatically.
 SHOPIFY_CLIENT_ID=
@@ -92,17 +101,31 @@ For the access token there are two options:
 - **Option 1 (static token):** if you already have a Shopify Admin API token, set `SHOPIFY_ACCESS_TOKEN` directly and leave the OAuth fields blank.
 - **Option 2 (OAuth flow, recommended):** create an app in the [Shopify Dev Dashboard](https://shopify.dev/docs/apps/build/dev-dashboard) with the `read_customers` scope, add `http://localhost:3000/callback` as an allowed redirect URI and add the app to your store, paste the Client ID and Client secret into `.env`, and leave `SHOPIFY_ACCESS_TOKEN` blank. Run the script with `--from-api` and it will open your browser, complete the flow, and save the token automatically.
 
-### 5. Export your Shopify data
+> ⚠️ **Note:** If your store is part of the Shopify partner program, you must request access from Shopify to access protected customer data. There is a guide available in the Shopify documentation [here](https://shopify.dev/docs/apps/launch/protected-customer-data#request-access-to-protected-customer-data).
+
+#### 5. Export your Shopify data
 
 From your Shopify Admin: **Customers → Export → Plain CSV file**
 
 Shopify caps the export at 15 MB. For large stores, export in multiple parts using segment or date filters, then pass all files to `--customers`. Alternatively, use `--from-api` to fetch all customers directly via the GraphQL API with automatic pagination.
 
+#### 6. Create the `shopifyTags` custom attribute in Descope
+
+Before running the migration, create the `shopifyTags` attribute manually in [Descope Console → Users → Custom Attributes](https://app.descope.com/users/attributes):
+
+| Attribute name | Type |
+|---|---|
+| `shopifyTags` | Multi Select |
+
+Add an option for each tag used in your Shopify store. Tags will not be migrated correctly if this attribute does not exist before the script runs.
+
+The other Shopify attributes (`shopifyCustomerId`, `shopifyTotalSpent`, `shopifyTotalOrders`, `shopifyNote`) are created automatically by the script.
+
 ---
 
-## Running the Migration
+### Running the Migration
 
-### Dry run (recommended first)
+#### Dry run (recommended first)
 
 Preview what will be migrated without making any changes:
 
@@ -114,7 +137,7 @@ python3 src/main.py --customers shopify-exports/customers_export.csv --dry-run
 python3 src/main.py --from-api --dry-run
 ```
 
-### Live migration
+#### Live migration
 
 ```bash
 # Single CSV
@@ -130,7 +153,7 @@ python3 src/main.py --from-api
 
 Add `--verbose` / `-v` to print each customer as it is processed.
 
-### Example output
+#### Example output
 
 ```
 Fetching customers from Shopify GraphQL API...
@@ -159,9 +182,9 @@ Migration complete. Full log written to logs/
 
 ---
 
-## What Gets Migrated
+### What Gets Migrated
 
-### Customers
+#### Customers
 Each customer is created as a Descope user with:
 - Email as primary login ID; phone as additional login ID (if present)
 - Active status
@@ -169,7 +192,7 @@ Each customer is created as a Descope user with:
 
 Customers with no email and no phone are skipped — they can't be given a login ID.
 
-### Custom attributes
+#### Custom attributes
 The following custom attributes are automatically created in your Descope project before migration begins:
 
 | Attribute | Type | Description |
@@ -180,12 +203,12 @@ The following custom attributes are automatically created in your Descope projec
 | `shopify_tags` | String | Comma-separated Shopify tags |
 | `shopify_note` | String | Internal Shopify note |
 
-### Existing Descope users
+#### Existing Descope users
 If a customer's email already exists in Descope (e.g. a pre-existing user), the migration merges in the Shopify custom attributes and, if the Shopify record has a phone number not already on the account, adds it as an additional login ID. The account's activation state and all other existing data are left untouched.
 
 ---
 
-## Testing
+### Testing
 
 ```bash
 python3 -m unittest tests.test_migration
@@ -193,9 +216,148 @@ python3 -m unittest tests.test_migration
 
 ---
 
-## Logs
+### Logs
 
 A timestamped log file is written to `logs/migration_log_<timestamp>.log` on each run. Failed users are listed in both the log and the terminal summary.
+
+---
+
+## Just In Time Migration Guide
+
+Instead of migrating all users upfront, JIT migration moves users to Descope on their first login. When a user authenticates and doesn't exist in Descope yet, the flow looks them up in Shopify, lets them go through the normal credential check, then applies their Shopify attributes to the newly created account.
+
+> **Note:** Shopify customers with no email and no phone cannot be migrated — Descope requires a login identifier. These users are silently skipped.
+
+### How It Works
+
+```
+User enters email or phone
+    ↓
+User exists in Descope?
+    ├─ Yes → credential check proceeds normally
+    └─ No  → Shopify is queried by email or phone
+                ↓
+           Found in Shopify? ──No──> continue as brand new user
+                ↓ Yes
+           Shopify attributes stored in flow context
+                ↓
+           Normal credential check (Descope creates the user)
+                ↓
+           "Update User / Attributes" applies Shopify attributes to the new account
+```
+
+### Prerequisites
+
+- A Descope project
+- A Shopify Admin API access token with `read_customers` scope (can be generated using the batch migration script in `--dry-run` mode with the `--from-api` option)
+
+### Setup
+
+#### 1. Create the Shopify HTTP Connector
+
+In Descope Console → Connectors → HTTP, create a new connector with:
+
+- **Base URL:** `https://<your-store>.myshopify.com/admin/api/2026-07/graphql.json`
+- **Headers:**
+  - `X-Shopify-Access-Token: <your token>` (store as a secret)
+  - `Content-Type: application/json`
+
+#### 2. Configure the Descope Flow
+
+Open the login flow you want to add JIT migration to in Descope Console → Flows. Locate the point after the user enters their identifier and add a **User Exists** condition node. All steps below go on the **false** (user not found) branch.
+
+**Step 1 — Build the Shopify query string (Scriptlet action)**
+
+Add a **Scriptlet** action. Shopify's customer search API requires an `email:` or `phone:` prefix on the search term, so this step constructs the right query string before calling Shopify.
+
+Add an argument `loginId` with value `form.externalId` and put the following in the script code:
+
+```javascript
+return {
+    shopifyQuery: loginId.startsWith("+") ? `phone:${loginId}` : `email:${loginId}`
+};
+```
+
+The output key `shopifyQuery` is referenced in the next step.
+
+**Step 2 — Look up the customer in Shopify (HTTP Connector action)**
+
+Add an **HTTP Connector** action and select the Shopify connector created in step 1. Configure it as a POST request with the following body. The scriptlet will substitute the `shopifyQuery` output from the previous scriptlet step into `{{scripts.scriptletResult.shopifyQuery}}`:
+
+```json
+{
+  "query": "query($q: String!) { customers(first: 1, query: $q) { edges { node { id firstName lastName defaultEmailAddress { emailAddress } defaultPhoneNumber { phoneNumber } numberOfOrders amountSpent { amount } tags note } } } }",
+  "variables": { "q": "{{scripts.scriptletResult.shopifyQuery}}" }
+}
+```
+
+**Step 3 - Parse the Shopify response data**
+
+Add a **Scriptlet** action. Shopify's API returns customer data in an array within JSON, which is easier to parse using JavaScript. Set the context key to `parsedShopify` and put the following in the script code:
+
+```javascript
+const customer = shopifyResult?.data?.customers?.edges?.[0]?.node;
+
+if (!customer) {
+  return {
+    found: false,
+    customerId: "",
+    email: "",
+    phone: "",
+    firstName: "",
+    lastName: "",
+    numberOfOrders: "",
+    amountSpent: "",
+    tags: "",
+    note: ""
+  };
+}
+
+return {
+  found: true,
+  customerId: Number(customer.id.split("/").pop()) || 0,
+  email: customer.defaultEmailAddress?.emailAddress || "",
+  phone: customer.defaultPhoneNumber?.phoneNumber || "",
+  firstName: customer.firstName || "",
+  lastName: customer.lastName || "",
+  numberOfOrders: Number(String(customer.numberOfOrders ?? "0")),
+  amountSpent: Number(String(customer.amountSpent?.amount ?? "0")),
+  tags: Array.isArray(customer.tags) ? customer.tags.join(",") : "",
+  note: customer.note || ""
+};
+```
+
+After this step, add a condition: if `scripts.parsedShopify.found` is false, exit this branch and rejoin the main flow. The user has no Shopify account and should be treated as a brand new signup.
+
+**Step 4 — Normal credential check**
+
+Rejoin the main flow here. Descope handles the credential check and creates the user account as it normally would for a new user.
+
+**Step 5 — Apply Shopify attributes (Update User / Attributes action)**
+
+After the credential check, add an **Update User / Attributes** action. Map each attribute from the Shopify connector response (step 2) to the corresponding custom attribute on the user:
+
+| Attribute | Source value |
+|---|---|
+| `shopifyCustomerId` | `scripts.parsedShopify.customerId` |
+| `shopifyTotalSpent` | `scripts.parsedShopify.amountSpent` |
+| `shopifyTotalOrders` | `scripts.parsedShopify.numberOfOrders` |
+| `shopifyTags` | `scripts.parsedShopify.tags` |
+| `shopifyNote` | `scripts.parsedShopify.note` |
+
+The exact syntax for referencing the connector response will depend on how Descope's flow builder names the step output — use the step output reference format shown in Descope's documentation.
+
+#### 3. Create Custom Attributes in Descope
+
+Before any users are provisioned, create the following custom attributes in Descope Console → User Management → Custom Attributes:
+
+| Attribute name | Type | Additional Notes |
+|---|---|---|
+| `shopifyCustomerId` | Numeric |  |
+| `shopifyTotalSpent` | Numeric |  |
+| `shopifyTotalOrders` | Numeric |  |
+| `shopifyTags` | Multi Select | Make sure to create all of the tags you have in Shopify |
+| `shopifyNote` | Text |  |
 
 ---
 
