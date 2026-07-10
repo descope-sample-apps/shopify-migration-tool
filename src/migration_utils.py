@@ -4,11 +4,13 @@ migration_utils.py
 All Descope SDK interactions for the Shopify → Descope customer migration.
 
 Custom attributes auto-created in Descope before migration begins:
-  - shopify_customer_id        (String)   Shopify customer ID
-  - shopify_total_spent        (String)   lifetime spend value
-  - shopify_total_orders       (String)   total order count
-  - shopify_tags               (String)   comma-separated Shopify tags
-  - shopify_note               (String)   internal Shopify note (not customer-visible)
+  - shopifyCustomerId    (Numeric)  Shopify customer ID
+  - shopifyTotalSpent    (Numeric)  lifetime spend value
+  - shopifyTotalOrders   (Numeric)  total order count
+  - shopifyNote          (Text)     internal Shopify note (not customer-visible)
+
+The shopifyTags attribute (Multi Select) must be created manually in Descope Console
+before running the migration — see README for details.
 
 Customers with no email and no phone are skipped — Descope requires a login ID
 and there is no safe placeholder that would let the customer authenticate later.
@@ -74,14 +76,17 @@ def _client() -> DescopeClient:
 # ── Custom attribute definitions ──────────────────────────────────────────────
 
 _CUSTOM_ATTRIBUTES = {
-    "shopify_customer_id": "String",
-    "shopify_total_spent": "String",
-    "shopify_total_orders": "String",
-    "shopify_tags": "String",
-    "shopify_note": "String",
+    "shopifyCustomerId": "Number",
+    "shopifyTotalSpent": "Number",
+    "shopifyTotalOrders": "Number",
+    "shopifyNote": "Text",
 }
 
-_ATTR_TYPE_MAP = {"String": 1, "Number": 2, "Boolean": 3}
+# shopifyTags (Multi Select) is intentionally excluded — Descope's Multi Select
+# type requires pre-configured options. Create it manually in the Descope Console
+# before running the migration.
+
+_ATTR_TYPE_MAP = {"Number": 2, "Text": 1}
 
 # Descope error codes
 _ERR_USER_EXISTS = "E011001"  # user already exists (login ID taken)
@@ -136,6 +141,12 @@ def ensure_custom_attributes() -> None:
     so this function calls the REST API directly.
     """
     _ERR_ATTR_EXISTS = "E016002"
+
+    print(
+        "  ⚠ Before proceeding, make sure the 'shopifyTags' Multi Select attribute has been created\n"
+        "    manually with all the relevant options in Descope Console → User Management → Custom Attributes\n"
+        "    Tags will not be migrated correctly if this attribute does not exist."
+    )
 
     for name, type_str in _CUSTOM_ATTRIBUTES.items():
         payload = {
@@ -234,12 +245,25 @@ def process_customers(customers: list[dict], dry_run: bool, verbose: bool) -> di
                 print(f"Still working, migrated {i} customers...")
             continue
 
+        try:
+            customer_id = int(customer.get("shopify_customer_id") or 0)
+        except (ValueError, TypeError):
+            customer_id = 0
+        try:
+            total_spent = float(customer.get("total_spent") or 0)
+        except (ValueError, TypeError):
+            total_spent = 0.0
+        try:
+            total_orders = int(customer.get("total_orders") or 0)
+        except (ValueError, TypeError):
+            total_orders = 0
+
         custom_attributes = {
-            "shopify_customer_id": customer.get("shopify_customer_id", ""),
-            "shopify_total_spent": customer.get("total_spent", ""),
-            "shopify_total_orders": customer.get("total_orders", ""),
-            "shopify_tags": customer.get("tags", ""),
-            "shopify_note": customer.get("note", ""),
+            "shopifyCustomerId": customer_id,
+            "shopifyTotalSpent": total_spent,
+            "shopifyTotalOrders": total_orders,
+            "shopifyTags": customer.get("tags", ""),
+            "shopifyNote": customer.get("note", ""),
         }
 
         # ── Check for pre-existing Descope user with same email ───────────────
