@@ -306,7 +306,7 @@ Add an **HTTP Connector** POST action and select the Shopify connector created i
 }
 ```
 
-**Step 3 - Parse the Shopify response data**
+**Step 4 - Parse the Shopify response data**
 
 Add a **Scriptlet** action. Shopify's API returns customer data in an array within JSON, which is easier to parse using JavaScript. Set the context key to `parsedShopify` and put the following as the script code:
 
@@ -344,7 +344,7 @@ return {
 
 After this step, add a condition: if `scripts.parsedShopify.found` is false, skip ahead past applying the Shopify attributes to marking the user as migrated. The user doesn't have a Shopify account.
 
-**Step 4 — Apply Shopify attributes (Update User / Attributes action)**
+**Step 5 — Apply Shopify attributes (Update User / Attributes action)**
 
 After the credential check, add an **Update User / Attributes** action. Map each attribute from the Shopify connector response (step 2) to the corresponding custom attribute on the user:
 
@@ -357,9 +357,17 @@ After the credential check, add an **Update User / Attributes** action. Map each
 | `shopifyNote` | `scripts.parsedShopify.note` |
 | `Phone` | `scripts.parsedShopify.phone` |
 
-**Step 5 — Mark the user as migrated**
+**Step 6 — Mark the user as migrated**
 
 Add another **Update User / Attributes** action. Choose `migratedFromShopify` for the user attribute field, set the type to `Boolean`, and set the value to `True`.
+
+**[Optional] Step 7 — Verify migrated phone numbers**
+
+Since Shopify allows users to have unverified phone numbers, we can't just accept migrated phone numbers and immediately add them as login IDs. Instead, we can use OTP (or any other phone based authentication method like [magic link](https://docs.descope.com/auth-methods/magic-link), [enchanted link](https://docs.descope.com/auth-methods/enchanted-link), or [nOTP](https://docs.descope.com/auth-methods/notp)) to verify the number first and then add it as a login ID.
+
+To implement this as part of you JiT migration flow, add a condition right after the `Update User / Attributes` action that assigns the values from shopify to the user. Check for 2 conditions: `user.phone` is not empty(meaning a phone number has been migrated from Shopify), and that `user.verifiedPhone` is false, meaning the phone number wasn't already verified in case the user already existed in Descope.
+
+If this is false, go to the `Update User / Attributes` action that marks users as migrated. If it's true, add an `Update User` action block with your preferred authentication method, for example `Update User / OTP / SMS`. If you want to allow the user to log in with their phone number as their login ID, make sure to check the **Add to login IDs** box.
 
 ---
 
