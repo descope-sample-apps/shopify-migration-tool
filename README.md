@@ -4,6 +4,8 @@ A guide for migrating your Shopify customers to Descope. There are 2 ways to mig
 1. [Running a script for batch migration using using the Shopify API or CSV exports](#batch-migration-script)
 2. [Just in time migration using the Shopify API in a Descope flow](#just-in-time-migration-guide)
 
+> **Note:** with just in time migration, the first time a user logs into your store after enabling the migration they will have to do so using email because Shopify doesn't allow phone numbers as login IDs. If they have a phone number associated with their account on Shopify it can be verified and added as a login ID for future logins.
+
 ---
 
 ## Adding Descope as an OIDC Identity Provider in Shopify
